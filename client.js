@@ -93,6 +93,7 @@ window.__ModuleLoader__.load({
         'panel.compare': '对比',
         'panel.useThis': '使用这个',
         'panel.unpin': '取消钉住',
+        'panel.pin': '钉住',
         'panel.tokens': '输入 {input} · 输出 {output} tok',
         'panel.seconds': '{value} 秒',
         'panel.cost': '≈ {amount}',
@@ -103,6 +104,7 @@ window.__ModuleLoader__.load({
         'panel.editable': '可直接修改，会实时同步到输入框',
         'panel.locked': '会话正在提交，暂不能编辑草稿',
         'settings.label': '提示词增强',
+        'settings.enabled': '启用插件',
         'settings.intro': '这些设置会写入当前 profile 的 patch，保存后立即生效（插件会热重载）。',
         'settings.basic': '基本',
         'settings.directApply': '点击按钮直接替换草稿',
@@ -175,6 +177,7 @@ window.__ModuleLoader__.load({
         'settings.save': '保存',
         'settings.reset': '恢复默认',
         'settings.saved': '已保存，正在应用…',
+        'settings.applied': '已保存并生效',
         'settings.failed': '保存失败',
         'settings.loadFailed': '读取设置失败',
         'settings.loading': '正在读取…',
@@ -249,6 +252,7 @@ window.__ModuleLoader__.load({
         'panel.editable': 'Editable; changes sync to the composer live',
         'panel.locked': 'The session is submitting; the draft cannot be edited right now',
         'settings.label': 'Prompt Forge',
+        'settings.enabled': 'Enable the plugin',
         'settings.intro': 'Saved to the active profile patch and applied immediately (the plugin hot-reloads).',
         'settings.basic': 'Basics',
         'settings.directApply': 'Replace the draft on click',
@@ -1458,8 +1462,10 @@ window.__ModuleLoader__.load({
         if (inputActions !== undefined && typeof inputActions.setDraft === 'function') inputActions.setDraft(undoEntry.original)
       }
 
-      return h('span', { className: 'pfgo-anchor-wrap' },
-        h('button', {
+      return h(React.Fragment, null,
+        h('style', null, CSS),
+        h('span', { className: 'pfgo-anchor-wrap' },
+          h('button', {
           ref: buttonRef,
           type: 'button',
           className: 'pfgo-btn',
@@ -1486,7 +1492,7 @@ window.__ModuleLoader__.load({
             role: 'status',
             'aria-live': 'polite',
             title: toast.title,
-          }, toast.text))
+          }, toast.text)))
     }
 
     // -----------------------------------------------------------------------
@@ -2040,6 +2046,7 @@ window.__ModuleLoader__.load({
         'aria-label': t('panel.title'),
         style,
       },
+      h('style', null, CSS),
       header,
       h('div', { className: 'pfgo-body' }, body),
       h('div', { className: 'pfgo-foot' }, footer),
@@ -2329,6 +2336,7 @@ window.__ModuleLoader__.load({
       }
 
       const header = h(React.Fragment, null,
+        h('style', null, CSS),
         h('h3', { className: 'pfgo-set-title' }, t('settings.label')),
         h('p', { className: 'pfgo-set-intro' }, t('settings.intro')))
 
@@ -2542,11 +2550,8 @@ window.__ModuleLoader__.load({
     // Plugin
     // -----------------------------------------------------------------------
     function apply(ctx) {
-      // One package-level stylesheet, disposed by the runner when the plugin unloads.
-      ctx.effect(() => {
-        if (typeof styles === 'undefined' || styles === null || typeof styles.insert !== 'function') return undefined
-        return styles.insert(CSS)
-      })
+      // Per-component <style> elements are the supported path for statically
+      // loaded modules: this client half has no `styles.insert` builtin.
       ctx.effect(() => () => {
         clearUnloadTimers()
         toast = null
