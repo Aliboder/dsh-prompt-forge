@@ -136,13 +136,16 @@ npm pack             # 产出 dsh-prompt-forge-<version>.tgz
 
 `files` 必须包含 `lib/**/*.js`：Host 通过相对路径导入它们，漏掉会让打包后的插件加载失败。已验证解包后 `index.js` 能正常导入 `lib/**`。
 
-发布到 GitHub 前还需要人工完成：
+发布前的人工检查（本仓库已配置 MIT 许可证与 `repository` 字段）：
 
 1. 完整重启 DSH，使新的 Host 代码与配置默认值生效；
-2. 刷新页面实测设置页、小窗浮层与费用提示（portal 已移除，改为座位内渲染，需要视觉回归）；
+2. 刷新页面实测设置页、小窗浮层与费用提示（浮层在座位内渲染，需要视觉回归）；
 3. 在干净 profile 里安装 tarball 验证一次；
-4. 选择并加入 `LICENSE`，在 `package.json` 补 `repository` 字段；
-5. `git init` → 首次提交 → 添加远程仓库并 push（本次只做了本地初始化与提交）。
+4. `git tag v1.0.0 && git push --tags`，再执行 `gh release create v1.0.0 --notes-file CHANGELOG.md`（可附带 tarball）。
+
+## License
+
+MIT © Aliboder
 
 ## 接口（仅本机）
 

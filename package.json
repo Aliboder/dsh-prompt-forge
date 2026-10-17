@@ -4,6 +4,12 @@
   "private": true,
   "type": "module",
   "description": "Composer prompt refinement for DeepSeek Harness: rewrite the draft through the harness LLM, review the result, then apply it.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Aliboder/dsh-prompt-forge.git"
+  },
+  "homepage": "https://github.com/Aliboder/dsh-prompt-forge#readme",
   "scripts": {
     "test": "node test/lib.test.mjs && node test/host.test.mjs",
     "check": "node --check index.js && node --check client.js && node --check lib/config.js && node --check lib/prompt.js",
