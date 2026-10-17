@@ -4,6 +4,15 @@
 
 在输入框里写一句草稿，点 ✨ → 模型把它改写成更清晰、可直接执行的提示词 → 在输入框上方的卡片里对比原文与结果 → 选择替换、复制、换风格重写或撤销。**只有你点"替换草稿"才会改动输入框，永不自动发送。**
 
+## 安装
+
+本项目是 DeepSeek Harness 的 bundle 插件包（Host + Web Client），任选一种方式安装：
+
+- **源码目录**：克隆本仓库，在 DSH 的 Plugin Manager（插件管理）中用 `install_bundle` 安装该目录；
+- **Release 包**：从 [Releases](https://github.com/Aliboder/dsh-prompt-forge/releases) 下载 `dsh-prompt-forge-<version>.tgz`，通过 Plugin Manager 安装。
+
+安装或更新后**完整重启 DSH**（Host 代码与默认配置需要重启生效），刷新页面即可在发送键旁看到 ✨。禁用或卸载请在 Plugin Manager 中操作。
+
 ## 交互
 
 | 位置 | 内容 |
