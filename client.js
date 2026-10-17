@@ -63,6 +63,7 @@ window.__ModuleLoader__.load({
     const STRINGS = {
       zh: {
         'button.title': '增强提示词（Ctrl+Alt+E）',
+        'menu.title': '用此风格增强',
         'button.busy': '正在增强…',
         'button.hintEmpty': '先写一句草稿',
         'button.hintChips': '草稿含 @引用或命令，无法安全改写',
@@ -105,6 +106,10 @@ window.__ModuleLoader__.load({
         'panel.locked': '会话正在提交，暂不能编辑草稿',
         'settings.label': '提示词增强',
         'settings.enabled': '启用插件',
+        'settings.currentRoute': '当前生效模型',
+        'settings.billingPeriod': '计费时段',
+        'settings.routeUnset': '跟随会话（服务端未解析到默认模型）',
+        'settings.modelPairRequired': 'Provider 与模型名需同时填写，或同时留空',
         'settings.intro': '这些设置会写入当前 profile 的 patch，保存后立即生效（插件会热重载）。',
         'settings.basic': '基本',
         'settings.directApply': '点击按钮直接替换草稿',
@@ -143,6 +148,8 @@ window.__ModuleLoader__.load({
         'toast.failed': '生成失败，已打开预览',
         'toast.today': '今日累计',
         'direct.running': '生成中 · {style}',
+        'direct.stop': '停止',
+        'toast.stopped': '已停止，草稿已还原',
         'toast.cost': '本次约 {amount}',
         'toast.done': '已替换草稿',
         'button.applied': '已替换',
@@ -211,6 +218,7 @@ window.__ModuleLoader__.load({
       },
       en: {
         'button.title': 'Refine prompt (Ctrl+Alt+E)',
+        'menu.title': 'Refine with style',
         'button.busy': 'Refining…',
         'button.hintEmpty': 'Type a draft first',
         'button.hintChips': 'The draft has @references or a command chip; refining would break them',
@@ -253,6 +261,10 @@ window.__ModuleLoader__.load({
         'panel.locked': 'The session is submitting; the draft cannot be edited right now',
         'settings.label': 'Prompt Forge',
         'settings.enabled': 'Enable the plugin',
+        'settings.currentRoute': 'Active model',
+        'settings.billingPeriod': 'Billing period',
+        'settings.routeUnset': 'Follows the session (no default model resolved on the host)',
+        'settings.modelPairRequired': 'Provider and model must be filled together, or both left empty',
         'settings.intro': 'Saved to the active profile patch and applied immediately (the plugin hot-reloads).',
         'settings.basic': 'Basics',
         'settings.directApply': 'Replace the draft on click',
@@ -292,6 +304,8 @@ window.__ModuleLoader__.load({
         'toast.failed': 'Generation failed; opened the preview',
         'toast.today': 'Today',
         'direct.running': 'Generating · {style}',
+        'direct.stop': 'Stop',
+        'toast.stopped': 'Stopped; draft restored',
         'toast.cost': '≈ {amount} (estimate)',
         'toast.done': 'Draft replaced',
         'button.applied': 'Replaced',
@@ -1061,12 +1075,14 @@ window.__ModuleLoader__.load({
       const read = () => (typeof readDraft === 'function' ? readDraft() : text)
       let lastWritten = text
       let diverted = false
+      const controller = new AbortController()
+      const run = directRuns.get(sessionId)
+      if (run !== undefined) run.controller = controller
       try {
         let value = readCache(style, text, cacheKey)
         if (value === undefined) {
           const body = { sessionId, text, style }
           if (contextOff) body.context = false
-          const controller = new AbortController()
           if (remoteConfig.streaming !== false && canWrite) {
             // Stream into the composer so the wait is visible. Writes are
             // coalesced (~60ms) and stop as soon as the user edits the draft.
@@ -1150,7 +1166,12 @@ window.__ModuleLoader__.load({
           showToast(tokenText !== null ? tokenText : translate('toast.done'))
         }
       } catch (error) {
-        if (error !== null && typeof error === 'object' && error.name === 'AbortError') return
+        if (error !== null && typeof error === 'object' && error.name === 'AbortError') {
+          // Explicit stop: put the original draft back and say so.
+          if (!diverted && lastWritten !== text && canWrite) inputActions.setDraft(text)
+          showToast(translate('toast.stopped'))
+          return
+        }
         // A failed stream may have left partial text in the composer; restore
         // the user's original draft unless they edited it themselves.
         if (!diverted && lastWritten !== text && canWrite) inputActions.setDraft(text)
@@ -1179,7 +1200,14 @@ window.__ModuleLoader__.load({
 .pfgo-direct-undo{border:0;background:transparent;color:var(--dsw-alias-brand-primary);font-size:10.5px;font-family:inherit;cursor:pointer;padding:0 2px;border-radius:4px}
 .pfgo-direct-undo:hover{text-decoration:underline}
 .pfgo-direct--busy{color:var(--dsw-alias-label-secondary)}
+.pfgo-direct{border:0;font-family:inherit}
+.pfgo-direct--stop{cursor:pointer}
+.pfgo-direct--stop:hover{background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary)}
 .pfgo-anchor-wrap{position:relative;display:inline-flex;align-items:center;gap:4px;flex:none}
+.pfgo-menu{position:absolute;right:0;bottom:calc(100% + 6px);z-index:95;display:flex;flex-direction:column;gap:2px;min-width:150px;padding:6px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-overlay);box-shadow:0 8px 24px rgb(0 0 0 / 18%)}
+.pfgo-menu-title{padding:2px 6px 4px;font-size:10.5px;color:var(--dsw-alias-label-secondary)}
+.pfgo-menu-item{border:0;background:transparent;text-align:left;font-family:inherit;font-size:12.5px;color:var(--dsw-alias-label-primary);padding:6px 8px;border-radius:7px;cursor:pointer}
+.pfgo-menu-item:hover,.pfgo-menu-item:focus-visible{background:var(--dsw-alias-bg-layer-2);outline:none}
 .pfgo-toast{position:absolute;right:0;bottom:calc(100% + 8px);z-index:90;display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;background:var(--dsw-alias-bg-overlay);box-shadow:0 6px 20px rgb(0 0 0 / 16%);color:var(--dsw-alias-label-primary);font-size:12px;pointer-events:none;white-space:nowrap;animation:pfgo-toast-in .16s ease-out}
 @keyframes pfgo-toast-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 @media (prefers-reduced-motion: reduce){.pfgo-toast{animation:none}}
@@ -1283,6 +1311,11 @@ window.__ModuleLoader__.load({
 .pfgo-set-status[data-tone="error"]{color:var(--dsw-alias-state-error-primary)}
 .pfgo-set-msg{font-size:12px;line-height:1.6;color:var(--dsw-alias-label-secondary)}
 /* --- settings panel polish (visual only) --- */
+.pfgo-set-hint[data-tone="error"]{color:var(--dsw-alias-state-error-primary)}
+.pfgo-set-info{display:flex;flex-wrap:wrap;gap:8px 20px;padding:9px 12px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-layer-2);font-size:12px}
+.pfgo-set-info-item{display:inline-flex;align-items:center;gap:6px;min-width:0}
+.pfgo-set-info-label{color:var(--dsw-alias-label-secondary);white-space:nowrap}
+.pfgo-set-info-value{color:var(--dsw-alias-label-primary);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:320px}
 .pfgo-set{gap:22px;padding:8px 4px 26px;max-width:660px}
 .pfgo-set-title{font-size:17px;font-weight:650;letter-spacing:-.01em}
 .pfgo-set-intro{background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);border-radius:10px;padding:10px 12px;line-height:1.65}
@@ -1379,6 +1412,21 @@ window.__ModuleLoader__.load({
       return `${symbol}${cost.amount.toFixed(digits)}`
     }
 
+    /**
+     * Client-side mirror of the host's billing period, used to keep the settings
+     * readout working before the host is restarted with the new /config field.
+     */
+    function billingPeriodNow(pricing) {
+      if (pricing === null || pricing === undefined || pricing.peakAware === false) return 'off-peak'
+      const shifted = new Date(Date.now() + 8 * 3600 * 1000)
+      const dayKey = `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, '0')}-${String(shifted.getUTCDate()).padStart(2, '0')}`
+      if (Array.isArray(pricing.holidays) && pricing.holidays.includes(dayKey)) return 'off-peak'
+      const weekday = shifted.getUTCDay()
+      if (weekday === 0 || weekday === 6) return 'off-peak'
+      const minutes = shifted.getUTCHours() * 60 + shifted.getUTCMinutes()
+      return (minutes >= 9 * 60 && minutes < 12 * 60) || (minutes >= 14 * 60 && minutes < 18 * 60) ? 'peak' : 'off-peak'
+    }
+
     function tokensText(t, usage) {
       if (usage === null || usage === undefined) return null
       return t('panel.tokens')
@@ -1407,6 +1455,7 @@ window.__ModuleLoader__.load({
       const buttonRef = React.useRef(null)
       const draftRef = React.useRef('')
       draftRef.current = typeof draft === 'string' ? draft : ''
+      const [menuOpen, setMenuOpen] = React.useState(false)
       useStore()
       React.useEffect(loadConfig, [])
 
@@ -1437,21 +1486,58 @@ window.__ModuleLoader__.load({
                 : tooLong ? t('button.hintTooLong')
                   : t('button.title')
 
-      const click = () => {
+      /** @param style - explicit style from the context menu, or null for the defaults. */
+      const begin = (style) => {
+        const previewStyle = style === null ? remoteConfig.defaultStyle : style
         if (busy) return
-        if (!remoteConfig.enabled) { openError(sessionId, draft ?? '', remoteConfig.defaultStyle, 'disabled'); return }
-        if (trimmed === '') { openError(sessionId, draft ?? '', remoteConfig.defaultStyle, 'empty'); return }
-        if (hasChips) { openError(sessionId, draft ?? '', remoteConfig.defaultStyle, 'chips'); return }
-        if (tooLong) { openError(sessionId, draft ?? '', remoteConfig.defaultStyle, 'too-long'); return }
-        if (phase !== 'plain') { openError(sessionId, draft ?? '', remoteConfig.defaultStyle, 'busy'); return }
+        if (!remoteConfig.enabled) { openError(sessionId, draft ?? '', previewStyle, 'disabled'); return }
+        if (trimmed === '') { openError(sessionId, draft ?? '', previewStyle, 'empty'); return }
+        if (hasChips) { openError(sessionId, draft ?? '', previewStyle, 'chips'); return }
+        if (tooLong) { openError(sessionId, draft ?? '', previewStyle, 'too-long'); return }
+        if (phase !== 'plain') { openError(sessionId, draft ?? '', previewStyle, 'busy'); return }
         if (remoteConfig.directApply === true) {
-          const directStyle = typeof remoteConfig.directStyle === 'string' && remoteConfig.directStyle !== ''
-            ? remoteConfig.directStyle
-            : remoteConfig.defaultStyle
+          const directStyle = style !== null
+            ? style
+            : typeof remoteConfig.directStyle === 'string' && remoteConfig.directStyle !== ''
+              ? remoteConfig.directStyle
+              : remoteConfig.defaultStyle
           void startDirect(sessionId, draft, directStyle, inputActions, () => draftRef.current)
           return
         }
-        start(sessionId, draft, remoteConfig.defaultStyle, false, { runContextOff: contextOff })
+        start(sessionId, draft, previewStyle, false, { runContextOff: contextOff })
+      }
+
+      const click = () => begin(null)
+
+      const openMenu = (event) => {
+        event.preventDefault()
+        if (busy || !usable) return
+        setMenuOpen(true)
+      }
+
+      // Close the style menu on outside press or Escape.
+      React.useEffect(() => {
+        if (!menuOpen) return undefined
+        const close = (event) => {
+          if (event.type === 'keydown') {
+            if (event.key === 'Escape') setMenuOpen(false)
+            return
+          }
+          const target = event.target
+          if (target instanceof Element && target.closest('.pfgo-menu') !== null) return
+          setMenuOpen(false)
+        }
+        document.addEventListener('pointerdown', close, true)
+        document.addEventListener('keydown', close, true)
+        return () => {
+          document.removeEventListener('pointerdown', close, true)
+          document.removeEventListener('keydown', close, true)
+        }
+      }, [menuOpen])
+
+      const stopDirect = () => {
+        const info = directRuns.get(sessionId)
+        if (info !== undefined && info.controller !== undefined) info.controller.abort()
       }
 
       // Direct mode has no popover, so it surfaces the one-step undo inline.
@@ -1474,11 +1560,32 @@ window.__ModuleLoader__.load({
           'data-busy': busy ? 'true' : undefined,
           disabled: !usable && !busy,
           onClick: click,
+          onContextMenu: openMenu,
         }, h(SparkleIcon)),
+        menuOpen
+          ? h('div', { className: 'pfgo-menu', role: 'menu', 'aria-label': t('menu.title') },
+            h('div', { className: 'pfgo-menu-title', 'aria-hidden': 'true' }, t('menu.title')),
+            STYLES.map((style) => h('button', {
+              key: style,
+              type: 'button',
+              role: 'menuitem',
+              className: 'pfgo-menu-item',
+              onClick: () => {
+                setMenuOpen(false)
+                begin(style)
+              },
+            }, t(`style.${style}`))))
+          : null,
         directInfo === undefined
           ? null
-          : h('span', { className: 'pfgo-direct pfgo-direct--busy', role: 'status', 'aria-live': 'polite' },
-            t('direct.running').replace('{style}', t(`style.${directInfo.style}`))),
+          : h('button', {
+            type: 'button',
+            className: 'pfgo-direct pfgo-direct--busy pfgo-direct--stop',
+            onClick: stopDirect,
+            title: t('direct.stop'),
+            'aria-label': t('direct.stop'),
+            'aria-live': 'polite',
+          }, `${t('direct.running').replace('{style}', t(`style.${directInfo.style}`))} · ${t('direct.stop')}`),
         undoEntry === undefined
           ? null
           : h('span', { className: 'pfgo-direct' },
@@ -2066,7 +2173,9 @@ window.__ModuleLoader__.load({
       return h('div', { className: 'pfgo-set-row' },
         h('div', { className: 'pfgo-set-label' },
           h('span', null, props.label),
-          props.hint === undefined ? null : h('span', { className: 'pfgo-set-hint' }, props.hint)),
+          props.hint === undefined
+            ? null
+            : h('span', { className: 'pfgo-set-hint', 'data-tone': props.hintTone }, props.hint)),
         h('div', { className: 'pfgo-set-control' }, props.control))
     }
 
@@ -2186,6 +2295,8 @@ window.__ModuleLoader__.load({
       const [history, setHistory] = React.useState(() => readHistory())
       const [expanded, setExpanded] = React.useState({})
       const [copiedKey, setCopiedKey] = React.useState('')
+      const [liveInfo, setLiveInfo] = React.useState(null)
+      const [liveTick, setLiveTick] = React.useState(0)
 
       // Async callbacks may outlive the panel; ignore their results then.
       const aliveRef = React.useRef(true)
@@ -2207,6 +2318,7 @@ window.__ModuleLoader__.load({
             }
             if (!aliveRef.current) return
             setConfig(payload.value.config)
+            setLiveTick((current) => current + 1)
           })
           .catch((error) => {
             if (!aliveRef.current) return
@@ -2218,6 +2330,28 @@ window.__ModuleLoader__.load({
           })
       }, [t])
       React.useEffect(load, [load])
+
+      // Read the resolved default route and the current billing period; this is
+      // a read-only diagnostic row, refreshed after every settings load/save.
+      React.useEffect(() => {
+        let cancelled = false
+        const readJson = (url) => fetch(url, { headers: { accept: 'application/json' } }).then((response) => response.json())
+        Promise.all([readJson(`${ENDPOINT}/route`), readJson(`${ENDPOINT}/config`)])
+          .then(([routePayload, configPayload]) => {
+            if (cancelled || !aliveRef.current) return
+            const route = routePayload !== null && routePayload !== undefined && routePayload.ok === true ? routePayload.value : {}
+            const live = configPayload !== null && configPayload !== undefined && configPayload.ok === true ? configPayload.value : {}
+            setLiveInfo({
+              provider: typeof route.provider === 'string' ? route.provider : '',
+              model: typeof route.model === 'string' ? route.model : '',
+              period: typeof live.pricingPeriod === 'string' ? live.pricingPeriod : '',
+            })
+          })
+          .catch(() => {
+            // The readout is optional; the form keeps working without it.
+          })
+        return () => { cancelled = true }
+      }, [liveTick])
 
       const patch = (next) => setConfig((previous) => (previous === null ? previous : { ...previous, ...next }))
       const patchEffort = (style, value) => setConfig((previous) => {
@@ -2231,9 +2365,12 @@ window.__ModuleLoader__.load({
         for (const field of NUMERIC_FIELDS) {
           const value = readPath(candidate, field.key)
           if (typeof value !== 'number' || !Number.isFinite(value) || value < field.min || value > field.max) {
-            return `${t(field.label)} (${field.min}–${field.max})`
+            return `${t('settings.invalid')}: ${t(field.label)} (${field.min}–${field.max})`
           }
         }
+        const provider = typeof candidate.provider === 'string' ? candidate.provider.trim() : ''
+        const model = typeof candidate.model === 'string' ? candidate.model.trim() : ''
+        if ((provider === '') !== (model === '')) return t('settings.modelPairRequired')
         return null
       }
       const sameSettings = (a, b) => SETTINGS_COMPARE_KEYS.every((key) => stableStringify(a?.[key]) === stableStringify(b?.[key]))
@@ -2304,7 +2441,7 @@ window.__ModuleLoader__.load({
           const invalid = validateSettings(config)
           if (invalid !== null) {
             setFailed(true)
-            setStatus(`${t('settings.invalid')}: ${invalid}`)
+            setStatus(invalid)
             return
           }
         }
@@ -2335,10 +2472,26 @@ window.__ModuleLoader__.load({
         }
       }
 
+      const routeText = liveInfo === null || liveInfo.provider === '' || liveInfo.model === ''
+        ? t('settings.routeUnset')
+        : `${liveInfo.provider}/${liveInfo.model}`
+      const periodText = liveInfo !== null && liveInfo.period !== ''
+        ? liveInfo.period === 'peak' ? t('panel.ratePeak') : t('panel.rateOffPeak')
+        : config !== null && config.pricing !== undefined
+          ? billingPeriodNow(config.pricing) === 'peak' ? t('panel.ratePeak') : t('panel.rateOffPeak')
+          : '—'
+
       const header = h(React.Fragment, null,
         h('style', null, CSS),
         h('h3', { className: 'pfgo-set-title' }, t('settings.label')),
-        h('p', { className: 'pfgo-set-intro' }, t('settings.intro')))
+        h('p', { className: 'pfgo-set-intro' }, t('settings.intro')),
+        h('div', { className: 'pfgo-set-info' },
+          h('span', { className: 'pfgo-set-info-item' },
+            h('span', { className: 'pfgo-set-info-label' }, t('settings.currentRoute')),
+            h('span', { className: 'pfgo-set-info-value' }, routeText)),
+          h('span', { className: 'pfgo-set-info-item' },
+            h('span', { className: 'pfgo-set-info-label' }, t('settings.billingPeriod')),
+            h('span', { className: 'pfgo-set-info-value' }, periodText))))
 
       if (loading && config === null) {
         return h('div', { className: 'pfgo-set' }, header, h('div', { className: 'pfgo-set-msg' }, t('settings.loading')))
@@ -2370,7 +2523,13 @@ window.__ModuleLoader__.load({
 
       const renderField = (field) => {
         const label = t(field.label)
-        const hint = field.hint === undefined ? undefined : t(field.hint)
+        const providerValue = typeof config.provider === 'string' ? config.provider.trim() : ''
+        const modelValue = typeof config.model === 'string' ? config.model.trim() : ''
+        const pairMismatch = (providerValue === '') !== (modelValue === '')
+        const pairField = field.key === 'provider' || field.key === 'model'
+        const hintKey = pairMismatch && pairField ? 'settings.modelPairRequired' : field.hint
+        const hint = hintKey === undefined ? undefined : t(hintKey)
+        const hintTone = pairMismatch && pairField ? 'error' : undefined
         const value = readPath(config, field.key)
         let control
         if (field.kind === 'switch') {
@@ -2406,7 +2565,7 @@ window.__ModuleLoader__.load({
             onChange: (next) => patchField(field.key, next),
           })
         }
-        return h(SettingsRow, { key: field.key, label, hint, control })
+        return h(SettingsRow, { key: field.key, label, hint, hintTone, control })
       }
 
       const section = (key, titleKey, children) => h('section', { key },

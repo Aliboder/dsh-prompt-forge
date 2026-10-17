@@ -33,6 +33,7 @@ import {
   stableStringify,
   configFingerprint,
   routeFingerprint,
+  billingPeriod,
 } from './lib/config.js'
 import { neutralizeTag, frameUserPrompt, systemFor, normalizeOutput } from './lib/prompt.js'
 
@@ -512,6 +513,8 @@ function createHandler(ctx, readConfig) {
           contextAware: config.contextAware,
           streaming: config.streaming,
           directApply: config.directApply,
+          pricingPeriod: billingPeriod(config.pricing, new Date()),
+          pricingCurrency: config.pricing.currency,
           routeKey: configFingerprint(config),
         },
       })
