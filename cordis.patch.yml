@@ -1,0 +1,12 @@
+# dsh-prompt-forge bundle patch: inserts the prompt-forge plugin row.
+# The Host half registers /prompt-forge/* on the shared webserver; the browser
+# half (declared by `dsh.client`) adds the composer trigger and review card.
+- insert:
+    - id: prompt-forge
+      name: dsh-prompt-forge
+      config:
+        enabled: true
+        defaultStyle: brief
+        contextAware: true
+        contextMaxMessages: 8
+        contextMaxChars: 4000
