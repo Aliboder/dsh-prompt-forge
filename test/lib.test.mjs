@@ -8,6 +8,7 @@ import {
   normalizeConfig,
   sanitizeSettings,
   effortFor,
+  fitEffort,
   costOf,
   configFingerprint,
   routeFingerprint,
@@ -63,6 +64,29 @@ check('clarify runs at high', effortFor(perStyle, 'clarify') === 'high')
 check('spec runs at low', effortFor(perStyle, 'spec') === 'low')
 const global = normalizeConfig({ reasoningEffort: 'max' })
 check('global effort overrides the per-style map', effortFor(global, 'brief') === 'max')
+
+// --- fitEffort ------------------------------------------------------------
+// The ladder a few real routes expose: deepseek-v4.1-flash cannot turn
+// thinking off, deepseek-v4-pro starts at high, and non-reasoning models have
+// no levels at all. Sending an unsupported level used to fail the request.
+const flash = fitEffort('off', ['low', 'high', 'max'])
+check('off degrades to the cheapest supported level', flash.effort === 'low' && flash.fallback === true, JSON.stringify(flash))
+const exact = fitEffort('high', ['low', 'high', 'max'])
+check('a supported level is kept exactly', exact.effort === 'high' && exact.fallback === false)
+const capped = fitEffort('max', ['low', 'high'])
+check('an over-limit level degrades to the highest supported', capped.effort === 'high' && capped.fallback === true)
+const pro = fitEffort('low', ['high', 'max'])
+check('a too-low level escalates to the nearest supported', pro.effort === 'high' && pro.fallback === true)
+const tie = fitEffort('high', ['low', 'max'])
+check('a tie resolves to the cheaper level', tie.effort === 'low' && tie.fallback === true, JSON.stringify(tie))
+const noReasoning = fitEffort('off', [])
+check('off on a model without reasoning omits the field', noReasoning.effort === undefined && noReasoning.fallback === false)
+const noReasoningHigh = fitEffort('high', [])
+check('a thinking request on a plain model is a fallback', noReasoningHigh.effort === undefined && noReasoningHigh.fallback === true)
+const offSupported = fitEffort('off', ['off', 'low', 'high', 'max'])
+check('off is kept when the model supports it', offSupported.effort === 'off' && offSupported.fallback === false)
+const unknownLevels = fitEffort('low', ['minimal', 'low'])
+check('ignores level ids the plugin does not offer', unknownLevels.effort === 'low' && unknownLevels.fallback === false)
 
 // --- sanitizeSettings -----------------------------------------------------
 const sanitized = sanitizeSettings({

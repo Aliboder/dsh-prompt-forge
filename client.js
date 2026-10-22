@@ -98,6 +98,8 @@ window.__ModuleLoader__.load({
         'panel.tokens': '输入 {input} · 输出 {output} tok',
         'panel.seconds': '{value} 秒',
         'panel.cost': '≈ {amount}',
+        'panel.effortAdjusted': '已就近调整',
+        'panel.effortAdjustedHint': '请求「{requested}」，但当前模型不支持该档位；已使用最接近的「{actual}」。',
         'panel.costEstimate': '按本插件配置的单价估算',
         'panel.ratePeak': '高峰时段',
         'panel.rateOffPeak': '空闲时段',
@@ -163,6 +165,9 @@ window.__ModuleLoader__.load({
         'settings.effort': '思考强度',
         'settings.effortGlobal': '全局覆盖',
         'settings.effortByStyle': '按风格',
+        'settings.effortSupported': '当前模型支持：{levels}；不支持的档位会自动就近调整。',
+        'settings.effortNone': '当前模型没有可调的思考档位，下面的设置会被忽略。',
+        'settings.effortUnknown': '暂时无法读取当前模型的思考档位。',
         'settings.context': '上下文感知',
         'settings.contextMessages': '最多参考轮数',
         'settings.contextChars': '上下文字符预算',
@@ -198,6 +203,7 @@ window.__ModuleLoader__.load({
         'effort.low': '低思考',
         'effort.high': '高思考',
         'effort.max': '最深思考',
+        'effort.default': '模型默认',
         'error.empty': '草稿是空的。',
         'error.tooLong': '草稿超过长度上限，请精简后再试。',
         'error.chips': '草稿含 @引用或命令芯片，改写会破坏它们；请先移除。',
@@ -253,6 +259,8 @@ window.__ModuleLoader__.load({
         'panel.tokens': 'in {input} · out {output} tok',
         'panel.seconds': '{value}s',
         'panel.cost': '≈ {amount}',
+        'panel.effortAdjusted': 'adjusted',
+        'panel.effortAdjustedHint': 'Requested "{requested}", but this model does not support that level; the nearest one "{actual}" was used.',
         'panel.costEstimate': 'Estimated from this plugin\'s configured rates',
         'panel.ratePeak': 'peak hours',
         'panel.rateOffPeak': 'off-peak',
@@ -319,6 +327,9 @@ window.__ModuleLoader__.load({
         'settings.effort': 'Thinking effort',
         'settings.effortGlobal': 'Global override',
         'settings.effortByStyle': 'Per style',
+        'settings.effortSupported': 'This model supports: {levels}; unsupported levels are adjusted to the nearest one.',
+        'settings.effortNone': 'This model exposes no thinking levels, so the settings below are ignored.',
+        'settings.effortUnknown': 'Could not read this model\'s thinking levels.',
         'settings.context': 'Context awareness',
         'settings.contextMessages': 'Recent turns',
         'settings.contextChars': 'Context character budget',
@@ -353,6 +364,7 @@ window.__ModuleLoader__.load({
         'effort.low': 'low thinking',
         'effort.high': 'high thinking',
         'effort.max': 'max thinking',
+        'effort.default': 'model default',
         'error.empty': 'The draft is empty.',
         'error.tooLong': 'The draft exceeds the length cap.',
         'error.chips': 'The draft contains @references or a command chip; refining would break them.',
@@ -1397,8 +1409,28 @@ window.__ModuleLoader__.load({
         case 'off': return t('effort.off')
         case 'high': return t('effort.high')
         case 'max': return t('effort.max')
+        case 'low': return t('effort.low')
         default: return t('effort.low')
       }
+    }
+
+    /**
+     * Render the effort actually used by one result. The host reports the
+     * nearest supported level when the configured one does not exist on the
+     * active model; surface that adjustment instead of pretending the request
+     * was honored.
+     */
+    function effortMeta(t, result, style) {
+      const actual = typeof result.reasoningEffort === 'string' && result.reasoningEffort !== '' ? result.reasoningEffort : ''
+      const label = actual === '' ? t('effort.default') : effortText(t, actual)
+      if (result.reasoningFallback !== true) return h('span', { key: 'effort' }, label)
+      const requested = typeof result.reasoningRequested === 'string' && result.reasoningRequested !== ''
+        ? result.reasoningRequested
+        : effortForStyle(style)
+      const hint = t('panel.effortAdjustedHint')
+        .replace('{requested}', effortText(t, requested))
+        .replace('{actual}', label)
+      return h('span', { key: 'effort', title: hint }, `${label} · ${t('panel.effortAdjusted')}`)
     }
 
     function effortForStyle(style) {
@@ -2042,7 +2074,7 @@ window.__ModuleLoader__.load({
           metaParts.push(h('span', { key: 'context', className: 'pfgo-badge' },
             t('panel.contextUsed').replace('{turns}', String(mine.result.context.turns))))
         }
-        metaParts.push(h('span', { key: 'effort' }, effortText(t, mine.result.reasoningEffort ?? effortForStyle(mine.style))))
+        metaParts.push(effortMeta(t, mine.result, mine.style))
         metaParts.push(h('span', { key: 'time' }, t('panel.seconds').replace('{value}', String(Math.max(1, Math.round((mine.result.elapsedMs ?? 0) / 100) / 10)))))
         body.push(h('section', { key: 'result', className: 'pfgo-section', 'aria-live': 'polite' },
           h('div', { className: 'pfgo-shead' },
@@ -2336,15 +2368,22 @@ window.__ModuleLoader__.load({
       React.useEffect(() => {
         let cancelled = false
         const readJson = (url) => fetch(url, { headers: { accept: 'application/json' } }).then((response) => response.json())
-        Promise.all([readJson(`${ENDPOINT}/route`), readJson(`${ENDPOINT}/config`)])
+        Promise.all([readJson(`${ENDPOINT}/route?reasoning=1`), readJson(`${ENDPOINT}/config`)])
           .then(([routePayload, configPayload]) => {
             if (cancelled || !aliveRef.current) return
             const route = routePayload !== null && routePayload !== undefined && routePayload.ok === true ? routePayload.value : {}
             const live = configPayload !== null && configPayload !== undefined && configPayload.ok === true ? configPayload.value : {}
+            const efforts = route !== null && route.reasoning !== null && route.reasoning !== undefined
+              && Array.isArray(route.reasoning.efforts)
+              ? route.reasoning.efforts
+                .map((effort) => effort !== null && typeof effort === 'object' ? effort.id : undefined)
+                .filter((id) => typeof id === 'string' && id !== '')
+              : null
             setLiveInfo({
               provider: typeof route.provider === 'string' ? route.provider : '',
               model: typeof route.model === 'string' ? route.model : '',
               period: typeof live.pricingPeriod === 'string' ? live.pricingPeriod : '',
+              efforts,
             })
           })
           .catch(() => {
@@ -2480,6 +2519,12 @@ window.__ModuleLoader__.load({
         : config !== null && config.pricing !== undefined
           ? billingPeriodNow(config.pricing) === 'peak' ? t('panel.ratePeak') : t('panel.rateOffPeak')
           : '—'
+      const effortLevels = liveInfo !== null && Array.isArray(liveInfo.efforts) ? liveInfo.efforts : null
+      const effortHint = effortLevels === null
+        ? t('settings.effortUnknown')
+        : effortLevels.length === 0
+          ? t('settings.effortNone')
+          : t('settings.effortSupported').replace('{levels}', effortLevels.map((effort) => effortText(t, effort)).join(' / '))
 
       const header = h(React.Fragment, null,
         h('style', null, CSS),
@@ -2617,6 +2662,7 @@ window.__ModuleLoader__.load({
             onClick: () => setOpenSections((previous) => ({ ...previous, effort: previous.effort === false })),
           }, t('settings.effort')),
           h('div', { className: 'pfgo-set-group', hidden: openSections.effort === false },
+            h('div', { className: 'pfgo-set-msg' }, effortHint),
             h(SettingsRow, { label: t('settings.effortGlobal'), control: h(SettingsSelect, {
               label: t('settings.effortGlobal'),
               value: config.reasoningEffort ?? '',

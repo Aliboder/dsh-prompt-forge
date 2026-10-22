@@ -29,6 +29,7 @@ import {
   sanitizeSettings,
   findSettingsEntry,
   effortFor,
+  fitEffort,
   costOf,
   stableStringify,
   configFingerprint,
@@ -324,6 +325,52 @@ function mapFinish(reason) {
 }
 
 /**
+ * Read the reasoning levels one concrete model offers.
+ *
+ * `undefined` means the harness could not describe the route (older cores
+ * without `resolveModelInfo`, or a failed lookup): callers keep their own
+ * default and rely on the rejection retry. An empty `efforts` list means the
+ * model genuinely has no reasoning control, so no reasoning field may be sent.
+ * @param llm - the harness LLM service.
+ * @param route - the resolved provider/model pair.
+ * @returns {Promise<{efforts: Array<{id:string,name?:string}>, defaultEffort?: string} | undefined>}
+ */
+async function modelReasoning(llm, route) {
+  if (route === undefined) return undefined
+  if (llm === null || llm === undefined || typeof llm.resolveModelInfo !== 'function') return undefined
+  try {
+    const info = await llm.resolveModelInfo(route.provider, route.model)
+    const reasoning = info === null || info === undefined ? undefined : info.reasoning
+    const efforts = reasoning === null || reasoning === undefined || !Array.isArray(reasoning.efforts) ? [] : reasoning.efforts
+    const levels = []
+    for (const effort of efforts) {
+      if (effort === null || typeof effort !== 'object') continue
+      if (typeof effort.id !== 'string' || effort.id === '') continue
+      levels.push({
+        id: effort.id,
+        ...(typeof effort.name === 'string' && effort.name !== '' ? { name: effort.name } : {}),
+      })
+    }
+    return {
+      efforts: levels,
+      ...(typeof reasoning?.defaultEffort === 'string' && reasoning.defaultEffort !== ''
+        ? { defaultEffort: reasoning.defaultEffort }
+        : {}),
+    }
+  } catch {
+    return undefined
+  }
+}
+
+/** Whether a finished call failed because the provider rejected our effort. */
+function isUnsupportedEffort(error) {
+  return error instanceof ForgeError
+    && error.code === 'upstream'
+    && error.params !== undefined
+    && error.params.providerCode === 'UNSUPPORTED_REASONING_EFFORT'
+}
+
+/**
  * Run one refinement.
  * @returns {Promise<{text:string, style:string, provider:string, model:string, elapsedMs:number}>}
  */
@@ -333,7 +380,15 @@ async function enhance(ctx, config, options) {
   if (route === undefined) throw new ForgeError('unconfigured')
   const llm = ctx.get('llm')
   if (llm === null || llm === undefined || typeof llm.stream !== 'function') throw new ForgeError('internal')
-  const effort = effortFor(config, options.style)
+  const requestedEffort = effortFor(config, options.style)
+  const reasoning = await modelReasoning(llm, route)
+  // Unknown metadata keeps the legacy behavior and relies on the retry seam
+  // below; a model known to expose no levels sends no reasoning field.
+  const fitted = reasoning === undefined
+    ? { effort: requestedEffort, fallback: false }
+    : fitEffort(requestedEffort, reasoning.efforts.map((effort) => effort.id))
+  // undefined means "send no reasoning field".
+  let chosenEffort = fitted.effort
 
   // A caller may switch grounding off for one call without touching config.
   const contextInfo = options.context === false ? undefined : conversationContext(ctx, config, options.sessionId, options.text)
@@ -363,7 +418,8 @@ async function enhance(ctx, config, options) {
   // completes before the deadline.
   aborted.catch(() => {})
 
-  try {
+  let deltaSeen = false
+  const attempt = async (effort) => {
     const stream = llm.stream({
       provider: route.provider,
       model: route.model,
@@ -371,7 +427,7 @@ async function enhance(ctx, config, options) {
       messages: [{ role: 'user', content: [{ type: 'text', text: frameUserPrompt(options.text, context) }] }],
       temperature: config.temperature,
       maxTokens: config.maxOutputTokens,
-      reasoningEffort: effort,
+      ...(effort === undefined ? {} : { reasoningEffort: effort }),
       signal: controller.signal,
       ...(typeof options.sessionId === 'string' && options.sessionId !== '' ? { sessionId: options.sessionId } : {}),
     })
@@ -391,6 +447,7 @@ async function enhance(ctx, config, options) {
         if (chunk === null || typeof chunk !== 'object') continue
         if (chunk.type === 'text-delta' && typeof chunk.text === 'string') {
           text += chunk.text
+          deltaSeen = true
           if (options.onDelta !== undefined) {
             try { options.onDelta(chunk.text) } catch { /* display path must never fail the call */ }
           }
@@ -407,22 +464,46 @@ async function enhance(ctx, config, options) {
     }
     const finishError = mapFinish(finish)
     if (finishError !== undefined) throw finishError
-    const normalized = normalizeOutput(text)
+    return { text, usage }
+  }
+
+  try {
+    let raw
+    let effortRejected = false
+    try {
+      raw = await attempt(chosenEffort)
+    } catch (error) {
+      // Providers reject the whole request before generating anything when the
+      // effort is unsupported, so retrying once without the field is safe as
+      // long as no text reached the UI. This is the last-resort seam for when
+      // model metadata could not be resolved up front.
+      if (chosenEffort !== undefined && !deltaSeen && isUnsupportedEffort(error)) {
+        effortRejected = true
+        chosenEffort = undefined
+        raw = await attempt(undefined)
+      } else {
+        throw error
+      }
+    }
+    const normalized = normalizeOutput(raw.text)
     if (normalized === '') throw new ForgeError('upstream', 'the model returned an empty response')
+    const adjusted = effortRejected || (chosenEffort === undefined ? requestedEffort !== 'off' : chosenEffort !== requestedEffort)
     return {
       text: normalized,
       style: options.style,
       provider: route.provider,
       model: route.model,
-      reasoningEffort: effort,
-      usage: usage === undefined ? null : {
-        inputTokens: numOr(usage.inputTokens, 0),
-        outputTokens: numOr(usage.outputTokens, 0),
-        cacheReadTokens: numOr(usage.cacheReadTokens, 0),
-        cacheWriteTokens: numOr(usage.cacheWriteTokens, 0),
-        reasoningTokens: numOr(usage.reasoningTokens, 0),
+      reasoningEffort: chosenEffort === undefined ? null : chosenEffort,
+      reasoningRequested: requestedEffort,
+      reasoningFallback: adjusted,
+      usage: raw.usage === undefined ? null : {
+        inputTokens: numOr(raw.usage.inputTokens, 0),
+        outputTokens: numOr(raw.usage.outputTokens, 0),
+        cacheReadTokens: numOr(raw.usage.cacheReadTokens, 0),
+        cacheWriteTokens: numOr(raw.usage.cacheWriteTokens, 0),
+        reasoningTokens: numOr(raw.usage.reasoningTokens, 0),
       },
-      cost: costOf(config.pricing, route.provider, route.model, usage),
+      cost: costOf(config.pricing, route.provider, route.model, raw.usage),
       context: {
         used: context !== undefined,
         turns: contextInfo === undefined ? 0 : contextInfo.turns,
@@ -484,12 +565,18 @@ function createHandler(ctx, readConfig) {
       }
       const requested = requestUrl.searchParams.get('session')
       const route = resolveRoute(config, sessionRouteOf(ctx, requested === null ? undefined : requested), defaultRouteOf(ctx))
+      // The reasoning catalog is only needed by the settings readout; keeping it
+      // off the cache-key lookup keeps that hot path free of adapter I/O.
+      const reasoning = requestUrl.searchParams.get('reasoning') === '1'
+        ? await modelReasoning(ctx.get('llm'), route)
+        : undefined
       writeJson(res, 200, {
         ok: true,
         value: {
           provider: route === undefined ? '' : route.provider,
           model: route === undefined ? '' : route.model,
           key: routeFingerprint(config, route),
+          ...(reasoning === undefined ? {} : { reasoning }),
         },
       })
       return

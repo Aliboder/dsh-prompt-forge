@@ -6,8 +6,20 @@
 import { EventEmitter } from 'node:events'
 import { apply } from '../index.js'
 
-function fakeContext(handlerRef, chunks, selection) {
+let hostFailures = 0
+function expect(label, condition, detail) {
+  if (condition) {
+    console.log(`ok   ${label}`)
+    return
+  }
+  hostFailures += 1
+  console.log(`FAIL ${label}${detail === undefined ? '' : ` — ${detail}`}`)
+}
+
+function fakeContext(handlerRef, chunks, selection, model) {
+  const spec = model === undefined ? {} : model
   let captured
+  const attempts = []
   const webServer = {
     register(route) {
       handlerRef.handler = route.handler
@@ -22,21 +34,35 @@ function fakeContext(handlerRef, chunks, selection) {
     get(name) {
       if (name === 'webServer') return webServer
       if (name === 'llm') {
-        return {
+        const llm = {
           stream(options) {
             captured = options
+            attempts.push(options.reasoningEffort)
+            if (Array.isArray(spec.strictEfforts)
+              && options.reasoningEffort !== undefined
+              && !spec.strictEfforts.includes(options.reasoningEffort)) {
+              return (async function* reject() {
+                yield { type: 'finish', reason: { kind: 'error', failure: { code: 'UNSUPPORTED_REASONING_EFFORT', message: 'unsupported effort', status: 400 } } }
+              })()
+            }
             return (async function* generate() {
               for (const chunk of chunks) yield chunk
             })()
           },
         }
+        // Omitting the property models an older core: the plugin must degrade
+        // instead of assuming resolveModelInfo exists.
+        if (spec.reasoning !== undefined) {
+          llm.resolveModelInfo = async () => (spec.reasoning === null ? {} : { reasoning: spec.reasoning })
+        }
+        return llm
       }
       if (name === 'agentDefaultModel') return { currentSelection: () => selection }
       if (name === 'sessions') return { get: () => undefined }
       return undefined
     },
   }
-  return { ctx, options: () => captured }
+  return { ctx, options: () => captured, attempts: () => attempts }
 }
 
 function fakeRequest(body, url = '/prompt-forge/enhance') {
@@ -111,6 +137,70 @@ console.log('brief effort:', options().reasoningEffort)
 const res3 = fakeResponse()
 await holder.handler(fakeRequest(JSON.stringify({ text: 'hello there', style: 'clarify' })), res3)
 console.log('clarify effort:', options().reasoningEffort)
+
+// --- model-aware effort ---------------------------------------------------
+// deepseek-v4.1-flash exposes low/high/max but not off: the default "brief"
+// style must degrade to low instead of sending an unsupported level.
+const flashHolder = { handler: null }
+const flashScope = fakeContext(flashHolder, chunks, { provider: 'p', model: 'm' }, {
+  reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }, { id: 'max', name: 'Max' }] },
+})
+apply(flashScope.ctx, { reasoningByStyle: { spec: 'low', brief: 'off', clarify: 'high' }, pricing: { peakAware: false } })
+const flashRes = fakeResponse()
+await flashHolder.handler(fakeRequest(JSON.stringify({ text: 'hello there', style: 'brief' })), flashRes)
+const flashBody = JSON.parse(flashRes.payload)
+expect('brief sends the cheapest supported effort', flashScope.options().reasoningEffort === 'low', String(flashScope.options().reasoningEffort))
+expect('the response reports the adjusted effort', flashBody.ok === true
+  && flashBody.value?.reasoningEffort === 'low'
+  && flashBody.value?.reasoningRequested === 'off'
+  && flashBody.value?.reasoningFallback === true, JSON.stringify(flashBody.value))
+
+// A model without reasoning metadata must receive no reasoning field at all.
+const plainHolder = { handler: null }
+const plainScope = fakeContext(plainHolder, chunks, { provider: 'p', model: 'm' }, { reasoning: null })
+apply(plainScope.ctx, { reasoningByStyle: { brief: 'off' } })
+const plainRes = fakeResponse()
+await plainHolder.handler(fakeRequest(JSON.stringify({ text: 'hello there', style: 'brief' })), plainRes)
+const plainBody = JSON.parse(plainRes.payload)
+expect('omits reasoning on a model without levels', plainScope.options().reasoningEffort === undefined, String(plainScope.options().reasoningEffort))
+expect('reports no effort and no fallback', plainBody.ok === true
+  && plainBody.value?.reasoningEffort === null
+  && plainBody.value?.reasoningFallback === false, JSON.stringify(plainBody.value))
+
+// Last-resort seam: an older core cannot describe the model, so the host sends
+// the configured level, the provider rejects it, and the request is retried
+// once without the field instead of failing in the user's face.
+const retryHolder = { handler: null }
+const retryScope = fakeContext(retryHolder, chunks, { provider: 'p', model: 'm' }, { strictEfforts: [] })
+apply(retryScope.ctx, { reasoningByStyle: { brief: 'off' } })
+const retryRes = fakeResponse()
+await retryHolder.handler(fakeRequest(JSON.stringify({ text: 'hello there', style: 'brief' })), retryRes)
+const retryBody = JSON.parse(retryRes.payload)
+expect('retries once without the rejected effort', retryScope.attempts().length === 2
+  && retryScope.attempts()[0] === 'off'
+  && retryScope.attempts()[1] === undefined, JSON.stringify(retryScope.attempts()))
+expect('the retry succeeds and reports the fallback', retryBody.ok === true
+  && retryBody.value?.reasoningEffort === null
+  && retryBody.value?.reasoningFallback === true, JSON.stringify(retryBody))
+
+// The settings readout asks for the level catalog explicitly; the cache-key
+// lookup must stay free of adapter work.
+const routeModelHolder = { handler: null }
+const routeModelScope = fakeContext(routeModelHolder, [], { provider: 'p', model: 'm' }, {
+  reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }], defaultEffort: 'low' },
+})
+apply(routeModelScope.ctx, {})
+const routeFullRes = fakeResponse()
+await routeModelHolder.handler(fakeGet('/prompt-forge/route?reasoning=1'), routeFullRes)
+const routeFull = JSON.parse(routeFullRes.payload).value
+expect('route exposes reasoning levels on demand', Array.isArray(routeFull?.reasoning?.efforts)
+  && routeFull.reasoning.efforts.length === 2
+  && routeFull.reasoning.defaultEffort === 'low', JSON.stringify(routeFull))
+const routeLeanRes = fakeResponse()
+await routeModelHolder.handler(fakeGet('/prompt-forge/route'), routeLeanRes)
+const routeLean = JSON.parse(routeLeanRes.payload).value
+expect('route omits the catalog on the cache-key path', routeLean?.reasoning === undefined, JSON.stringify(routeLean))
+
 
 // --- P0 checks ------------------------------------------------------------
 
@@ -324,3 +414,11 @@ const customConfig = fakeResponse()
 await holder11.handler(fakeGet('/prompt-forge/config'), customConfig)
 const customKey = JSON.parse(customConfig.payload).value?.routeKey
 console.log('prompt fingerprint differs:', baseKey !== customKey)
+
+// --- summary --------------------------------------------------------------
+if (hostFailures > 0) {
+  console.log(`\n${hostFailures} host check(s) failed`)
+  process.exitCode = 1
+} else {
+  console.log('\nall host checks passed')
+}

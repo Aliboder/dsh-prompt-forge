@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.2.0
+
+### 修复
+
+- 修复在 `deepseek-v4.1-flash` 等「无法关闭思考」的模型上，默认「极简」风格必然报错 `does not support reasoning effort "off"` 的问题：Host 现在先通过 `ctx.llm.resolveModelInfo` 读取模型实际支持的思考档位，再就近映射（平局取更省的一档），模型没有推理档位时不发送该字段
+- 增加兜底重试：若 provider 仍以 `UNSUPPORTED_REASONING_EFFORT` 拒绝，且尚未输出任何文字，自动去掉 `reasoningEffort` 重试一次，不再把该错误直接抛给用户
+
+### 功能
+
+- 结果栏显示**实际使用**的思考档位；发生就近调整时标注「已就近调整」，悬停可看请求档位与原因
+- 设置页「思考强度」分组显示当前模型支持的档位；模型没有档位时提示这些设置会被忽略
+- `GET /prompt-forge/route?reasoning=1` 返回模型思考档位，供设置页只读展示（不影响缓存指纹的轻量路径）
+
 ## 1.1.0
 
 ### 功能
