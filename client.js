@@ -418,6 +418,9 @@ window.__ModuleLoader__.load({
       routeKey: '',
     }
     let configLoaded = false
+    let configRequest = null
+    let configGeneration = 0
+    let configAttempts = 0
     // Per-run context switch, remembered across popover opens and reloads.
     const CONTEXT_KEY = 'dsh.prompt-forge.context-off'
     let contextOff = (() => {
@@ -451,18 +454,52 @@ window.__ModuleLoader__.load({
       return version
     }
 
-    function loadConfig() {
-      if (configLoaded) return
+    /**
+     * Load the client bootstrap config.
+     *
+     * `force` re-reads it after the settings page saves: the host hot-reloads
+     * its patch, but this module keeps the copy fetched when the page loaded,
+     * so the ✨ button would otherwise keep opening the preview after direct
+     * mode was switched on.
+     *
+     * A failed lookup is retried instead of latched: on a cold start the host
+     * route may not be mounted yet, and one 404 would pin the client to its
+     * defaults (including `directApply: false`) until a page reload.
+     */
+    function loadConfig(force) {
+      if (force === true) {
+        configLoaded = false
+        configAttempts = 0
+      }
+      if (configLoaded) return configRequest ?? Promise.resolve()
       configLoaded = true
-      fetch(`${ENDPOINT}/config`, { headers: { accept: 'application/json' } })
-        .then((response) => response.json())
-        .then((payload) => {
-          if (payload !== null && typeof payload === 'object' && payload.ok === true && payload.value !== undefined) {
-            Object.assign(remoteConfig, payload.value)
-            bump()
-          }
+      const generation = ++configGeneration
+      const request = fetch(`${ENDPOINT}/config`, { headers: { accept: 'application/json' } })
+        .then((response) => {
+          if (!response.ok) throw new Error(`HTTP ${response.status}`)
+          return response.json()
         })
-        .catch(() => {})
+        .then((payload) => {
+          if (generation !== configGeneration) return
+          if (payload === null || typeof payload !== 'object' || payload.ok !== true || payload.value === undefined) {
+            throw new Error('config unavailable')
+          }
+          Object.assign(remoteConfig, payload.value)
+          configAttempts = 0
+          bump()
+        })
+        .catch(() => {
+          if (generation !== configGeneration) return
+          configLoaded = false
+          if (configAttempts >= 4) return
+          configAttempts += 1
+          later(() => { void loadConfig() }, 400 * configAttempts)
+        })
+        .finally(() => {
+          if (configRequest === request) configRequest = null
+        })
+      configRequest = request
+      return request
     }
 
     // -----------------------------------------------------------------------
@@ -1489,7 +1526,7 @@ window.__ModuleLoader__.load({
       draftRef.current = typeof draft === 'string' ? draft : ''
       const [menuOpen, setMenuOpen] = React.useState(false)
       useStore()
-      React.useEffect(loadConfig, [])
+      React.useEffect(() => { void loadConfig() }, [])
 
       React.useEffect(() => {
         const element = buttonRef.current
@@ -2502,6 +2539,10 @@ window.__ModuleLoader__.load({
           setStatus(t('settings.saved'))
           try { localStorage.setItem(SETTINGS_SAVED_KEY, String(Date.now())) } catch { /* storage unavailable */ }
           await confirmApplied(reset === true ? null : config)
+          // The settings page writes the host config; this module only fetched
+          // its copy at mount, so refresh it now or the ✨ button keeps using
+          // the old direct-apply/style/limits values until the page reloads.
+          await loadConfig(true)
         } catch (error) {
           if (!aliveRef.current) return
           setFailed(true)
