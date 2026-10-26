@@ -1,10 +1,13 @@
 name: publish
 
+# Publishes to npm through Trusted Publishing (OIDC): no NPM_TOKEN secret.
+# Requires the package's Trusted Publisher entry on npmjs.com to name this
+# repository and workflow file. Triggered by a version tag or manually.
+
 on:
-  workflow_dispatch:
   push:
-    tags:
-      - 'v*'
+    tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -19,9 +22,17 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+      - name: Ensure npm supports trusted publishing
+        run: npm install -g npm@latest
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund --no-package-lock
       - name: Test
-        run: npm test
-      - name: Publish to npm
+        run: |
+          node --check index.js
+          node --check client.js
+          node --check lib/config.js
+          node --check lib/prompt.js
+          node test/lib.test.mjs
+          node test/host.test.mjs
+      - name: Publish
         run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
